@@ -1,67 +1,69 @@
 import streamlit as st
 import requests
+import time
 
-# Konfigurasi Halaman Khusus Vynnra
-st.set_page_config(page_title="Vynnra v3.0 | The Ultimate Architect", layout="wide")
-st.title("✨ Vynnra: AI Web Architect")
+st.set_page_config(page_title="Vynnra v4.0 | Animated Architect", layout="wide")
+
+# --- ANIMATION & STYLING ---
+st.markdown("""
+<style>
+    .thinking { font-style: italic; color: #888; display: flex; align-items: center; gap: 10px; }
+    .thinking::after { content: "..."; animation: dots 1.5s infinite; }
+    @keyframes dots { 0% { content: "."; } 50% { content: ".."; } 100% { content: "..."; } }
+    .chat-bubble { padding: 15px; border-radius: 15px; margin: 10px 0; background: #262730; }
+</style>
+""", unsafe_allow_html=True)
 
 # Konfigurasi API
 auth_token = st.secrets.get("OPENROUTER_API_KEY") 
 base_url = "https://openrouter.ai/api"
 model_name = "anthropic/claude-3.5-sonnet"
 
-# Prompt Arsitek (Pusat Logika)
-VYNNRA_PRO_PROMPT = """
-Kamu adalah Vynnra v3.0, AI Web Architect.
-Tugas: Membangun proyek Next.js 14 (App Router) menggunakan TypeScript dan Tailwind CSS.
-Perintah:
-1. Berikan struktur folder proyek terlebih dahulu.
-2. Berikan isi file per file (Next.js, Tailwind, Components).
-3. Gunakan ShadcnUI untuk komponen.
-4. Kamu harus selalu mengingat konteks file sebelumnya jika user meminta revisi.
-"""
+VYNNRA_SYSTEM = "Kamu adalah Vynnra, AI Web Architect. Berikan kode Next.js 14 yang estetik. Gunakan format Markdown."
 
-# Inisialisasi Memori Vynnra
-if "vynnra_history" not in st.session_state: st.session_state.vynnra_history = []
-if "current_code" not in st.session_state: st.session_state.current_code = ""
+if "history" not in st.session_state: st.session_state.history = []
 
-# Layout: Chat di kiri, Preview di kanan
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    chat_container = st.container(height=600)
-    for msg in st.session_state.vynnra_history:
+    st.title("✨ Vynnra v4.0")
+    chat_container = st.container(height=500)
+    
+    # Render History
+    for msg in st.session_state.history:
         with chat_container.chat_message(msg["role"]): st.markdown(msg["content"])
     
     if prompt := st.chat_input("Vynnra, bangunkan website..."):
-        st.session_state.vynnra_history.append({"role": "user", "content": prompt})
+        st.session_state.history.append({"role": "user", "content": prompt})
         with chat_container.chat_message("user"): st.markdown(prompt)
         
+        # Animasi Thinking
         with chat_container.chat_message("assistant"):
-            with st.status("Vynnra sedang mendesain arsitektur...", expanded=True):
-                payload = {
-                    "model": model_name,
-                    "messages": [{"role": "system", "content": VYNNRA_PRO_PROMPT}] + st.session_state.vynnra_history
-                }
-                res = requests.post(
-                    f"{base_url}/v1/chat/completions", 
-                    json=payload, 
-                    headers={"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
-                ).json()
-                
-                answer = res['choices'][0]['message']['content']
+            thinking_placeholder = st.empty()
+            thinking_placeholder.markdown('<div class="thinking">Vynnra sedang berpikir</div>', unsafe_allow_html=True)
+            
+            payload = {"model": model_name, "messages": [{"role": "system", "content": VYNNRA_SYSTEM}] + st.session_state.history}
+            response = requests.post(f"{base_url}/v1/chat/completions", json=payload, headers={"Authorization": f"Bearer {auth_token}"})
+            
+            if response.status_code == 200:
+                answer = response.json()['choices'][0]['message']['content']
+                thinking_placeholder.empty() # Hapus animasi thinking
                 st.markdown(answer)
-                st.session_state.vynnra_history.append({"role": "assistant", "content": answer})
-                st.session_state.current_code = answer
+                st.session_state.history.append({"role": "assistant", "content": answer})
+            else:
+                thinking_placeholder.empty()
+                st.error("Error: Infrastruktur sedang sibuk.")
 
 with col2:
-    st.subheader("💻 Source & Preview")
-    tab_code, tab_preview = st.tabs(["Kode (.tsx)", "Live Preview"])
-    with tab_code:
-        st.code(st.session_state.current_code, language="typescript")
-    with tab_preview:
-        st.info("Render komponen Next.js/Tailwind...")
+    st.subheader("👁️ Live Preview")
+    # Logika untuk menampilkan kode terakhir dari history
+    last_code = next((m["content"] for m in reversed(st.session_state.history) if m["role"] == "assistant"), "")
+    
+    tab1, tab2 = st.tabs(["💻 Code", "🎨 Visual"])
+    with tab1:
+        st.code(last_code, language="typescript")
+    with tab2:
         st.components.v1.html(f"""
             <script src="https://cdn.tailwindcss.com"></script>
-            <div class="p-4 bg-white min-h-screen text-black">{st.session_state.current_code}</div>
+            <div class="bg-white text-black p-5">{last_code}</div>
         """, height=600, scrolling=True)

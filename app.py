@@ -1,24 +1,16 @@
 import streamlit as st
 import requests
-import time
 
-st.set_page_config(page_title="Vynnra v4.0 | Animated Architect", layout="wide")
+# Konfigurasi Halaman
+st.set_page_config(page_title="Vynnra v4.0 | Architect", layout="wide")
+st.title("✨ Vynnra: AI Web Architect")
 
-# --- ANIMATION & STYLING ---
-st.markdown("""
-<style>
-    .thinking { font-style: italic; color: #888; display: flex; align-items: center; gap: 10px; }
-    .thinking::after { content: "..."; animation: dots 1.5s infinite; }
-    @keyframes dots { 0% { content: "."; } 50% { content: ".."; } 100% { content: "..."; } }
-    .chat-bubble { padding: 15px; border-radius: 15px; margin: 10px 0; background: #262730; }
-</style>
-""", unsafe_allow_html=True)
+# Mengambil konfigurasi dari Streamlit Secrets (sesuai setting.json kamu)
+auth_token = st.secrets.get("ANTHROPIC_AUTH_TOKEN")
+base_url = st.secrets.get("ANTHROPIC_BASE_URL")
+model_name = st.secrets.get("ANTHROPIC_MODEL")
 
-# Konfigurasi API
-auth_token = st.secrets.get("OPENROUTER_API_KEY") 
-base_url = "https://openrouter.ai/api"
-model_name = "anthropic/claude-3.5-sonnet"
-
+# System Prompt Vynnra
 VYNNRA_SYSTEM = "Kamu adalah Vynnra, AI Web Architect. Berikan kode Next.js 14 yang estetik. Gunakan format Markdown."
 
 if "history" not in st.session_state: st.session_state.history = []
@@ -26,10 +18,7 @@ if "history" not in st.session_state: st.session_state.history = []
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.title("✨ Vynnra v4.0")
     chat_container = st.container(height=500)
-    
-    # Render History
     for msg in st.session_state.history:
         with chat_container.chat_message(msg["role"]): st.markdown(msg["content"])
     
@@ -37,33 +26,33 @@ with col1:
         st.session_state.history.append({"role": "user", "content": prompt})
         with chat_container.chat_message("user"): st.markdown(prompt)
         
-        # Animasi Thinking
         with chat_container.chat_message("assistant"):
-            thinking_placeholder = st.empty()
-            thinking_placeholder.markdown('<div class="thinking">Vynnra sedang berpikir</div>', unsafe_allow_html=True)
+            # Menggunakan struktur request sesuai standar Anthropic (tokies.lol)
+            headers = {
+                "x-api-key": auth_token,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": model_name,
+                "max_tokens": 4096,
+                "system": VYNNRA_SYSTEM,
+                "messages": [{"role": m["role"], "content": m["content"]} for m in st.session_state.history]
+            }
             
-            payload = {"model": model_name, "messages": [{"role": "system", "content": VYNNRA_SYSTEM}] + st.session_state.history}
-            response = requests.post(f"{base_url}/v1/chat/completions", json=payload, headers={"Authorization": f"Bearer {auth_token}"})
+            response = requests.post(f"{base_url}/v1/messages", json=payload, headers=headers)
             
             if response.status_code == 200:
-                answer = response.json()['choices'][0]['message']['content']
-                thinking_placeholder.empty() # Hapus animasi thinking
+                answer = response.json()['content'][0]['text']
                 st.markdown(answer)
                 st.session_state.history.append({"role": "assistant", "content": answer})
             else:
-                thinking_placeholder.empty()
-                st.error("Error: Infrastruktur sedang sibuk.")
+                st.error(f"Error dari Tokies/Anthropic: {response.text}")
 
 with col2:
-    st.subheader("👁️ Live Preview")
-    # Logika untuk menampilkan kode terakhir dari history
+    st.subheader("💻 Preview")
     last_code = next((m["content"] for m in reversed(st.session_state.history) if m["role"] == "assistant"), "")
-    
-    tab1, tab2 = st.tabs(["💻 Code", "🎨 Visual"])
-    with tab1:
-        st.code(last_code, language="typescript")
-    with tab2:
-        st.components.v1.html(f"""
-            <script src="https://cdn.tailwindcss.com"></script>
-            <div class="bg-white text-black p-5">{last_code}</div>
-        """, height=600, scrolling=True)
+    st.components.v1.html(f"""
+        <script src="https://cdn.tailwindcss.com"></script>
+        <div class="p-4 bg-white text-black">{last_code}</div>
+    """, height=600, scrolling=True)

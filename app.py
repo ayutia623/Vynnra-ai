@@ -1,105 +1,67 @@
 import streamlit as st
 import requests
-import json
 
-# --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Vynnra | AI Web Architect", layout="wide")
+# Konfigurasi Halaman Khusus Vynnra
+st.set_page_config(page_title="Vynnra v3.0 | The Ultimate Architect", layout="wide")
+st.title("✨ Vynnra: AI Web Architect")
 
-# --- 2. API SETUP (From Secrets) ---
-auth_token = st.secrets.get("ANTHROPIC_AUTH_TOKEN")
-base_url = st.secrets.get("ANTHROPIC_BASE_URL")
-model_name = "claude-3-5-sonnet-20240620" # Model terbaik untuk coding Next.js
+# Konfigurasi API
+auth_token = st.secrets.get("OPENROUTER_API_KEY") 
+base_url = "https://openrouter.ai/api"
+model_name = "anthropic/claude-3.5-sonnet"
 
-# --- 3. SYSTEM PROMPT (The "Soul" of Vynnra) ---
-VYNNRA_SYSTEM_PROMPT = """
-Kamu adalah Vynnra, AI Architect senior yang ahli dalam Next.js 14, TypeScript (TSX), dan Tailwind CSS.
-Tugasmu:
-1. Membangun komponen web modern, bersih, dan fungsional.
-2. Selalu gunakan Tailwind CSS untuk styling.
-3. Gunakan Lucide-React untuk ikon.
-4. Output kode harus dalam format file .tsx yang valid (Next.js App Router).
-5. Jangan berikan penjelasan terlalu panjang, fokuslah pada kualitas kode.
-6. Penting: Setiap kode harus self-contained (semua komponen dalam satu file jika memungkinkan).
+# Prompt Arsitek (Pusat Logika)
+VYNNRA_PRO_PROMPT = """
+Kamu adalah Vynnra v3.0, AI Web Architect.
+Tugas: Membangun proyek Next.js 14 (App Router) menggunakan TypeScript dan Tailwind CSS.
+Perintah:
+1. Berikan struktur folder proyek terlebih dahulu.
+2. Berikan isi file per file (Next.js, Tailwind, Components).
+3. Gunakan ShadcnUI untuk komponen.
+4. Kamu harus selalu mengingat konteks file sebelumnya jika user meminta revisi.
 """
 
-# --- 4. LAYOUT DESIGN ---
-st.title("✨ Vynnra: Next.js Architect")
-
-col_chat, col_preview = st.columns([1, 1])
-
 # Inisialisasi Memori Vynnra
-if "vynnra_messages" not in st.session_state:
-    st.session_state.vynnra_messages = []
-if "generated_code" not in st.session_state:
-    st.session_state.generated_code = ""
+if "vynnra_history" not in st.session_state: st.session_state.vynnra_history = []
+if "current_code" not in st.session_state: st.session_state.current_code = ""
 
-# --- 5. CHAT INTERFACE (Kiri) ---
-with col_chat:
-    st.subheader("💬 Vynnra Chat")
-    chat_container = st.container(height=500)
+# Layout: Chat di kiri, Preview di kanan
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    chat_container = st.container(height=600)
+    for msg in st.session_state.vynnra_history:
+        with chat_container.chat_message(msg["role"]): st.markdown(msg["content"])
     
-    for message in st.session_state.vynnra_messages:
-        with chat_container.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("Vynnra, bangunkan saya dashboard admin dengan Next.js..."):
-        st.session_state.vynnra_messages.append({"role": "user", "content": prompt})
-        with chat_container.chat_message("user"):
-            st.markdown(prompt)
-
+    if prompt := st.chat_input("Vynnra, bangunkan website..."):
+        st.session_state.vynnra_history.append({"role": "user", "content": prompt})
+        with chat_container.chat_message("user"): st.markdown(prompt)
+        
         with chat_container.chat_message("assistant"):
-            with st.spinner("Vynnra sedang merancang arsitektur TSX..."):
-                headers = {
-                    "x-api-key": auth_token,
-                    "Content-Type": "application/json",
-                    "anthropic-version": "2023-06-01"
-                }
+            with st.status("Vynnra sedang mendesain arsitektur...", expanded=True):
                 payload = {
                     "model": model_name,
-                    "max_tokens": 4096,
-                    "system": VYNNRA_SYSTEM_PROMPT,
-                    "messages": st.session_state.vynnra_messages
+                    "messages": [{"role": "system", "content": VYNNRA_PRO_PROMPT}] + st.session_state.vynnra_history
                 }
+                res = requests.post(
+                    f"{base_url}/v1/chat/completions", 
+                    json=payload, 
+                    headers={"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
+                ).json()
                 
-                response = requests.post(f"{base_url}/v1/messages", json=payload, headers=headers)
-                
-                if response.status_code == 200:
-                    res_data = response.json()
-                    ai_response = res_data['content'][0]['text']
-                    st.markdown(ai_response)
-                    st.session_state.vynnra_messages.append({"role": "assistant", "content": ai_response})
-                    
-                    # Simpan kode untuk preview
-                    st.session_state.generated_code = ai_response
-                else:
-                    st.error(f"Error: {response.text}")
+                answer = res['choices'][0]['message']['content']
+                st.markdown(answer)
+                st.session_state.vynnra_history.append({"role": "assistant", "content": answer})
+                st.session_state.current_code = answer
 
-# --- 6. PREVIEW & CODE VIEW (Kanan) ---
-with col_preview:
-    tab_preview, tab_code = st.tabs(["🖼️ Live Preview", "💻 Source Code (.tsx)"])
-    
+with col2:
+    st.subheader("💻 Source & Preview")
+    tab_code, tab_preview = st.tabs(["Kode (.tsx)", "Live Preview"])
     with tab_code:
-        if st.session_state.generated_code:
-            st.code(st.session_state.generated_code, language="typescript")
-        else:
-            st.info("Kode belum di-generate.")
-
+        st.code(st.session_state.current_code, language="typescript")
     with tab_preview:
-        if st.session_state.generated_code:
-            # Simulasi Preview: Karena Next.js butuh bundler, 
-            # kita akan merender kode Tailwind/HTML hasil ekstraksi.
-            st.info("Render Visual (BETA)")
-            # Trik: Ekstrak bagian HTML/Tailwind dari respons Claude untuk ditampilkan di iframe
-            st.components.v1.html(
-                f"""
-                <script src="https://cdn.tailwindcss.com"></script>
-                <div class="bg-slate-900 text-white min-h-screen p-4">
-                    <p class="text-xs text-slate-500 mb-4">Live Preview dari Vynnra Architect</p>
-                    {st.session_state.generated_code.split('```')[1] if '```' in st.session_state.generated_code else 'Generating...'}
-                </div>
-                """,
-                height=600,
-                scrolling=True
-            )
-        else:
-            st.write("Menunggu arsitektur dari Vynnra...")
+        st.info("Render komponen Next.js/Tailwind...")
+        st.components.v1.html(f"""
+            <script src="https://cdn.tailwindcss.com"></script>
+            <div class="p-4 bg-white min-h-screen text-black">{st.session_state.current_code}</div>
+        """, height=600, scrolling=True)

